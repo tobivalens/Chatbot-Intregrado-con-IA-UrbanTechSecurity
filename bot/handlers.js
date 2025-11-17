@@ -1,4 +1,4 @@
-// bot/handlers.js (REEMPLAZAR)
+// bot/handlers.js
 const { mainMenu, submenus } = require('./menu');
 const { getImpact } = require('./slas');
 const db = require('./db');
@@ -7,24 +7,24 @@ const { saveEvidences } = require('./evidence');
 const { serviceLabel, subtypeLabel } = require('./labels');
 
 // in-memory user states
-const userStates = {}; // { [userId]: { step, service, subType, name, idNumber, phone, description, pendingEvidences: [] } }
+const userStates = {};
 
 function attachHandlers(bot) {
   attachHandlers.userStates = userStates;
 
-  // Message handler
+  // ======================================================
+  // 📨 MESSAGE HANDLER
+  // ======================================================
   bot.on('message', (msg) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
 
     // If no state yet
     if (!userStates[userId]) {
-      // If user sent a command (starts with /) we DON'T auto-open menu
       if (msg.text && msg.text.startsWith('/')) {
         userStates[userId] = { pendingEvidences: [] };
-        return; // allow onText handlers to run
+        return;
       }
-      // otherwise start flow
       userStates[userId] = { step: 'start', pendingEvidences: [] };
       bot.sendMessage(chatId, '¡Hola! Soy Atlas. Selecciona el tipo de incidente:', mainMenu);
       return;
@@ -32,50 +32,101 @@ function attachHandlers(bot) {
 
     const state = userStates[userId];
 
-    // If receiving media while awaiting description, capture as evidence
-    if (state.step === 'awaiting_description' && (msg.photo || msg.video || msg.document || msg.audio)) {
-      const media = msg.photo ? msg.photo[msg.photo.length - 1] : (msg.video || msg.document || msg.audio);
-      const fileId = media.file_id;
-      const fileType = msg.photo ? 'photo' : (msg.video ? 'video' : (msg.document ? 'document' : 'audio'));
-      state.pendingEvidences = state.pendingEvidences || [];
-      state.pendingEvidences.push({ file_id: fileId, file_type: fileType });
-      // optional caption
-      if (msg.caption) state.description = (state.description ? state.description + '\n' : '') + msg.caption;
-      // proceed to save right away
+    // Capture media as evidence
+    if (
+      state.step === 'awaiting_description' &&
+      (msg.photo || msg.video || msg.document || msg.audio)
+    ) {
+      const media = msg.photo
+        ? msg.photo[msg.photo.length - 1]
+        : msg.video || msg.document || msg.audio;
+
+      state.pendingEvidences.push({
+        file_id: media.file_id,
+        file_type: msg.photo ? 'photo' : msg.video ? 'video' : msg.document ? 'document' : 'audio'
+      });
+
+      if (msg.caption)
+        state.description = (state.description ? state.description + '\n' : '') + msg.caption;
+
       return saveTicketFromState(bot, chatId, userId);
     }
 
-    // normal text flow
+    // FORM STEPS
     if (state.step === 'awaiting_name') {
       state.name = msg.text;
       state.step = 'awaiting_id';
-      bot.sendMessage(chatId, 'Por favor ingresa tu número de cédula:');
-      return;
+      return bot.sendMessage(chatId, 'Por favor ingresa tu número de cédula:');
     }
+
     if (state.step === 'awaiting_id') {
       state.idNumber = msg.text;
       state.step = 'awaiting_phone';
-      bot.sendMessage(chatId, 'Por favor ingresa tu número de teléfono:');
-      return;
+      return bot.sendMessage(chatId, 'Por favor ingresa tu número de teléfono:');
     }
+
     if (state.step === 'awaiting_phone') {
       state.phone = msg.text;
       state.step = 'awaiting_description';
-      bot.sendMessage(chatId, 'Describe el incidente con detalle (puedes enviar fotos/videos):');
-      return;
+      return bot.sendMessage(chatId, 'Describe el incidente con detalle (puedes enviar fotos/videos):');
     }
+
     if (state.step === 'awaiting_description') {
       state.description = msg.text;
       return saveTicketFromState(bot, chatId, userId);
     }
 
-    // default: show menu only when user explicitly asks
+    // ============================================
+    // 📌 LECTURA DE TICKET ID DESDE "MIS CONSULTAS"
+    // ============================================
+    if (state.step === 'awaiting_ticket_id') {
+      const id = msg.text.replace(/[^0-9]/g, '');
+      state.step = null;
+
+      if (!id) return bot.sendMessage(chatId, '❌ ID inválido. Intenta de nuevo.');
+
+      db.query('SELECT * FROM tickets WHERE id = ?', [id], (err, results) => {
+        if (err) return bot.sendMessage(chatId, "Error consultando ticket.");
+        if (!results.length) return bot.sendMessage(chatId, `No existe ticket con ID ${id}.`);
+
+        const t = results[0];
+
+        let resp =
+          `📄 <b>Ticket ${t.id}</b>\n` +
+          `Estado: ${t.status}\n` +
+          `Servicio: ${serviceLabel(t.incident_type)}\n` +
+          `Subtipo: ${subtypeLabel(t.sub_type)}\n` +
+          `Prioridad: ${t.priority}\n` +
+          `Descripción: ${t.description}\n` +
+          `Creado: ${t.created_at}`;
+
+        bot.sendMessage(chatId, resp, { parse_mode: "HTML" });
+
+        db.query('SELECT * FROM evidences WHERE ticket_id = ?', [id], (e2, evids) => {
+          if (!e2 && evids.length) {
+            evids.forEach(ev => {
+              if (ev.file_type === "photo")
+                bot.sendPhoto(chatId, ev.file_id, { caption: "Evidencia (foto)" });
+              else if (ev.file_type === "video")
+                bot.sendVideo(chatId, ev.file_id, { caption: "Evidencia (video)" });
+              else
+                bot.sendDocument(chatId, ev.file_id, { caption: `Evidencia (${ev.file_type})` });
+            });
+          }
+        });
+      });
+      return;
+    }
+
+    // Show menu when explicitly requested
     if (msg.text && (msg.text.toLowerCase() === '/menu' || msg.text.toLowerCase() === 'menu')) {
       bot.sendMessage(chatId, 'Selecciona el tipo de incidente:', mainMenu);
     }
   });
 
-  // Callback handler
+  // ======================================================
+  // 🔵 CALLBACK QUERY HANDLER
+  // ======================================================
   bot.on('callback_query', (query) => {
     const chatId = query.message.chat.id;
     const userId = query.from.id;
@@ -85,147 +136,219 @@ function attachHandlers(bot) {
     const state = userStates[userId];
 
     const mainOptions = Object.keys(submenus);
-    if (mainOptions.includes(data)) {
-      state.service = data;
-      bot.sendMessage(chatId, 'Selecciona un subtipo:', submenus[data]);
-      bot.answerCallbackQuery(query.id);
-      return;
+
+    // ============================================
+    // 📁 MIS CONSULTAS
+    // ============================================
+    if (data === 'my_queries') {
+      bot.sendMessage(chatId, "📁 *Mis consultas:*", {
+        parse_mode: "Markdown",
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: "🔍 Consultar ticket por ID", callback_data: "query_ticket" }],
+            [{ text: "📜 Ver historial", callback_data: "menu_history" }],
+            [{ text: "⬅️ Volver", callback_data: "back_main" }]
+          ]
+        }
+      });
+      return bot.answerCallbackQuery(query.id);
     }
 
-    // subtypes prefixes
-    const prefixes = ['cam_','acc_','evid_','stor_','anal_','mant_','vand_','other_','svc_'];
+    // 🔍 pedir ID
+    if (data === 'query_ticket') {
+      state.step = 'awaiting_ticket_id';
+      bot.sendMessage(chatId, "Ingresa el ID del ticket:");
+      return bot.answerCallbackQuery(query.id);
+    }
+
+    // 📜 historial
+    if (data === 'menu_history') {
+      const tgId = userId;
+      db.query(
+        "SELECT id, incident_type, sub_type, status, created_at FROM tickets WHERE reporter_telegram_id = ? ORDER BY created_at DESC LIMIT 20",
+        [tgId],
+        (err, results) => {
+          if (err) return bot.sendMessage(chatId, "Error consultando historial.");
+          if (!results.length) return bot.sendMessage(chatId, "No tienes tickets registrados.");
+
+          let text = "📚 <b>Tus últimos tickets</b>:\n\n";
+          results.forEach(r => {
+            text += `<b>#${r.id}</b> — ${serviceLabel(r.incident_type)}\n`;
+            text += `   ${subtypeLabel(r.sub_type)}\n`;
+            text += `   Estado: ${r.status} — Creado: ${r.created_at}\n\n`;
+          });
+
+          bot.sendMessage(chatId, text, { parse_mode: "HTML" });
+        }
+      );
+      return bot.answerCallbackQuery(query.id);
+    }
+
+    // regresar al main menu
+    if (data === 'back_main') {
+      bot.sendMessage(chatId, 'Selecciona el tipo de incidente:', mainMenu);
+      return bot.answerCallbackQuery(query.id);
+    }
+
+    // MAIN MENU OPTIONS
+    if (mainOptions.includes(data)) {
+      state.service = data;
+      bot.sendMessage(chatId, "Selecciona un subtipo:", submenus[data]);
+      return bot.answerCallbackQuery(query.id);
+    }
+
+    // Subtypes
+    const prefixes = ['cam_', 'acc_', 'evid_', 'stor_', 'anal_', 'mant_', 'vand_', 'other_', 'svc_'];
     if (prefixes.some(p => data.startsWith(p))) {
       state.subType = data;
       state.step = 'awaiting_name';
-      bot.sendMessage(chatId, 'Perfecto. Para crear el ticket, por favor ingresa tu nombre completo:');
-      bot.answerCallbackQuery(query.id);
-      return;
+      bot.sendMessage(chatId, "Perfecto. Para crear el ticket, por favor ingresa tu nombre completo:");
+      return bot.answerCallbackQuery(query.id);
     }
 
     bot.answerCallbackQuery(query.id);
   });
 
-  // Command: /estado <id>
+  // ======================================================
+  // /estado COMMAND
+  // ======================================================
   bot.onText(/\/estado\s+(\d+)/, (msg, match) => {
     const chatId = msg.chat.id;
-    const id = parseInt(match[1], 10);
-    db.query('SELECT * FROM tickets WHERE id = ?', [id], (err, results) => {
-      if (err) return bot.sendMessage(chatId, 'Error consultando ticket.');
-      if (!results.length) return bot.sendMessage(chatId, `No existe ticket con ID ${id}.`);
-      const t = results[0];
+    const id = match[1];
 
-      // map labels
-      const svc = serviceLabel(t.incident_type);
-      const sub = subtypeLabel(t.sub_type);
+    db.query("SELECT * FROM tickets WHERE id = ?", [id], (err, res) => {
+      if (err) return bot.sendMessage(chatId, "Error consultando ticket.");
+      if (!res.length) return bot.sendMessage(chatId, `No existe ticket con ID ${id}.`);
 
-      // main text
-      let resp = `📄 <b>Ticket ${t.id}</b>\nEstado: ${t.status}\nServicio: ${svc}\nSubtipo: ${sub}\nPrioridad: ${t.priority}\nDescripción: ${t.description || '—'}\nCreado: ${t.created_at}\nSLA: ${t.sla_target || '—'}`;
-      bot.sendMessage(chatId, resp, { parse_mode: 'HTML' });
+      const t = res[0];
 
-      // send evidences if any
-      db.query('SELECT * FROM evidences WHERE ticket_id = ?', [id], (eerr, evids) => {
-        if (eerr) return;
-        if (!evids || evids.length === 0) return;
-        // send each evidence according to type
-        evids.forEach(ev => {
-          if (ev.file_type === 'photo') {
-            bot.sendPhoto(chatId, ev.file_id, { caption: 'Evidencia (foto)' }).catch(console.error);
-          } else if (ev.file_type === 'video') {
-            bot.sendVideo(chatId, ev.file_id, { caption: 'Evidencia (video)' }).catch(console.error);
-          } else {
-            // document or audio
-            bot.sendDocument(chatId, ev.file_id, { caption: `Evidencia (${ev.file_type})` }).catch(console.error);
-          }
-        });
+      const resp =
+        `📄 <b>Ticket ${t.id}</b>\n` +
+        `Estado: ${t.status}\n` +
+        `Servicio: ${serviceLabel(t.incident_type)}\n` +
+        `Subtipo: ${subtypeLabel(t.sub_type)}\n` +
+        `Prioridad: ${t.priority}\n` +
+        `Descripción: ${t.description}\n` +
+        `Creado: ${t.created_at}\n` +
+        `SLA: ${t.sla_target || "—"}`;
+
+      bot.sendMessage(chatId, resp, { parse_mode: "HTML" });
+
+      db.query("SELECT * FROM evidences WHERE ticket_id = ?", [id], (err2, evids) => {
+        if (!err2 && evids.length) {
+          evids.forEach(ev => {
+            if (ev.file_type === "photo") bot.sendPhoto(chatId, ev.file_id, { caption: "Evidencia (foto)" });
+            else if (ev.file_type === "video") bot.sendVideo(chatId, ev.file_id, { caption: "Evidencia (video)" });
+            else bot.sendDocument(chatId, ev.file_id, { caption: `Evidencia (${ev.file_type})` });
+          });
+        }
       });
     });
   });
 
-  // Command: /historial
+  // ======================================================
+  // /historial COMMAND
+  // ======================================================
   bot.onText(/\/historial/, (msg) => {
     const chatId = msg.chat.id;
     const tgId = msg.from.id;
-    db.query('SELECT id, incident_type, sub_type, status, created_at FROM tickets WHERE reporter_telegram_id = ? ORDER BY created_at DESC LIMIT 20', [tgId], (err, results) => {
-      if (err) return bot.sendMessage(chatId, 'Error consultando historial.');
-      if (!results.length) return bot.sendMessage(chatId, 'No tienes tickets registrados.');
-      // format nicely
-      let text = '📚 <b>Tus últimos tickets</b>:\n\n';
-      results.forEach(r => {
-        const svc = serviceLabel(r.incident_type);
-        const sub = subtypeLabel(r.sub_type);
-        text += `<b>#${r.id}</b> — ${svc}\n   ${sub}\n   Estado: ${r.status} — Creado: ${r.created_at}\n\n`;
-      });
-      bot.sendMessage(chatId, text, { parse_mode: 'HTML' });
-    });
+
+    db.query(
+      "SELECT id, incident_type, sub_type, status, created_at FROM tickets WHERE reporter_telegram_id = ? ORDER BY created_at DESC LIMIT 20",
+      [tgId],
+      (err, results) => {
+        if (err) return bot.sendMessage(chatId, "Error consultando historial.");
+        if (!results.length) return bot.sendMessage(chatId, "No tienes tickets registrados.");
+
+        let text = "📚 <b>Tus últimos tickets</b>:\n\n";
+        results.forEach(r => {
+          text += `<b>#${r.id}</b> — ${serviceLabel(r.incident_type)}\n`;
+          text += `   ${subtypeLabel(r.sub_type)}\n`;
+          text += `   Estado: ${r.status} — Creado: ${r.created_at}\n\n`;
+        });
+
+        bot.sendMessage(chatId, text, { parse_mode: "HTML" });
+      }
+    );
   });
 
-  // Command: /cerrar <id>
+  // ======================================================
+  // /cerrar <id>
+  // ======================================================
   bot.onText(/\/cerrar\s+(\d+)/, (msg, match) => {
     const chatId = msg.chat.id;
-    const ticketId = parseInt(match[1], 10);
-    db.query('UPDATE tickets SET status = ?, closed_at = ? WHERE id = ?', ['closed', new Date(), ticketId], (err, res) => {
-      if (err) return bot.sendMessage(chatId, 'Error cerrando ticket.');
-      if (res.affectedRows === 0) return bot.sendMessage(chatId, 'No se encontró el ticket.');
-      bot.sendMessage(chatId, `✔ Ticket ${ticketId} cerrado correctamente.`);
-    });
+    const ticketId = match[1];
+
+    db.query(
+      "UPDATE tickets SET status = 'closed', closed_at = ? WHERE id = ?",
+      [new Date(), ticketId],
+      (err, res) => {
+        if (err) return bot.sendMessage(chatId, "Error cerrando ticket.");
+        if (res.affectedRows === 0) return bot.sendMessage(chatId, "No existe ese ticket.");
+        bot.sendMessage(chatId, `✔ Ticket ${ticketId} cerrado correctamente.`);
+      }
+    );
   });
 
-  // Command to get chat id (useful to capture group ID)
+  // /getchatid
   bot.onText(/\/getchatid/, (msg) => {
-    const chatId = msg.chat.id;
-    bot.sendMessage(chatId, `chat_id: ${chatId}`);
+    bot.sendMessage(msg.chat.id, `chat_id: ${msg.chat.id}`);
   });
 
-  // expose helper to create tickets programmatically
   attachHandlers.saveTicketFromState = saveTicketFromState;
 }
 
-// helper: save ticket from state (unchanged but uses labels)
+// ======================================================
+// SAVE TICKET
+// ======================================================
 function saveTicketFromState(bot, chatId, userId) {
   const state = userStates[userId];
-  if (!state) return bot.sendMessage(chatId, 'Estado inválido.');
 
   const impact = getImpact(state.service, state.subType);
+
   const ticket = {
-    full_name: state.name || 'Sin nombre',
-    user_id: state.idNumber || 'Sin cédula',
-    phone: state.phone || 'Sin teléfono',
-    incident_type: state.service || 'no definido',
-    sub_type: state.subType || 'no definido',
-    description: state.description || '',
+    full_name: state.name,
+    user_id: state.idNumber,
+    phone: state.phone,
+    incident_type: state.service,
+    sub_type: state.subType,
+    description: state.description,
     category: impact.category,
     priority: impact.priority,
-    resolution_hours: impact.resolution_hours || 120,
-    resolution_time: impact.resolution_time || '',
-    sla_target: impact.sla_target || '',
-    status: 'open',
-    created_at: new Date(),
-    reporter_telegram_id: userId
+    resolution_hours: impact.resolution_hours,
+    resolution_time: impact.resolution_time,
+    sla_target: impact.sla_target,
+    status: "open",
+    reporter_telegram_id: userId,
+    created_at: new Date()
   };
 
-  db.query('INSERT INTO tickets SET ?', ticket, (err, result) => {
-    if (err) {
-      console.error('Error insert ticket', err);
-      return bot.sendMessage(chatId, '❌ Error al guardar el ticket. Intenta de nuevo.');
+  db.query("INSERT INTO tickets SET ?", ticket, (err, result) => {
+    if (err) return bot.sendMessage(chatId, "❌ Error al guardar el ticket.");
+
+    const id = result.insertId;
+
+    // Save evidences
+    if (state.pendingEvidences.length > 0) {
+      const values = state.pendingEvidences.map(ev => [
+        id,
+        ev.file_id,
+        ev.file_type,
+        new Date()
+      ]);
+      db.query(
+        "INSERT INTO evidences (ticket_id, file_id, file_type, created_at) VALUES ?",
+        [values]
+      );
     }
-    const ticketId = result.insertId;
 
-    // save evidences if any
-    const evids = state.pendingEvidences || [];
-    if (evids.length) {
-      const values = evids.map(e => [ticketId, e.file_id, e.file_type, new Date()]);
-      db.query('INSERT INTO evidences (ticket_id, file_id, file_type, created_at) VALUES ?', [values], (eerr) => {
-        if (eerr) console.error('Error guardando evidencias', eerr);
-      });
-    }
+    bot.sendMessage(
+      chatId,
+      `ID del Ticket: ${id}\nNombre: ${ticket.full_name}\nCédula: ${ticket.user_id}\nTeléfono: ${ticket.phone}\nTipo de incidente: ${serviceLabel(ticket.incident_type)}\nSubtipo: ${subtypeLabel(ticket.sub_type)}\nDescripción: ${ticket.description}`
+    );
 
-    // notify user (formatted simple)
-    const userMsg = `ID del Ticket: ${ticketId}\nNombre: ${ticket.full_name}\nCédula: ${ticket.user_id}\nTeléfono: ${ticket.phone}\nTipo de incidente: ${serviceLabel(ticket.incident_type)}\nSubtipo: ${subtypeLabel(ticket.sub_type)}\nDescripción: ${ticket.description}`;
-    bot.sendMessage(chatId, userMsg);
-
-    // notify NOC (using notifications module)
     notifyNOC({
-      id: ticketId,
+      id,
       incident_type: ticket.incident_type,
       sub_type: ticket.sub_type,
       priority: ticket.priority,
@@ -235,7 +358,6 @@ function saveTicketFromState(bot, chatId, userId) {
       sla_target: ticket.sla_target
     });
 
-    // clear state
     delete userStates[userId];
   });
 }

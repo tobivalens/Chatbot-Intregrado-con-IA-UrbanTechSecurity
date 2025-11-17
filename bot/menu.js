@@ -10,10 +10,14 @@ const mainMenu = {
       [{ text: '🤖 6. Fallo o sesgo en analítica de video', callback_data: 'analytics_issue' }],
       [{ text: '🛠️ 7. Mantenimiento preventivo / correctivo', callback_data: 'maintenance' }],
       [{ text: '🚨 8. Vandalismo / daño físico a equipos', callback_data: 'vandalism' }],
-      [{ text: '❓ 9. Otra incidencia', callback_data: 'other_issue' }]
+      [{ text: '❓ 9. Otra incidencia', callback_data: 'other_issue' }],
+
+      // 🔵 NUEVA OPCIÓN
+      [{ text: '📁 Mis consultas', callback_data: 'my_queries' }]
     ]
   }
 };
+
 
 const submenus = {
   svc_outage: {
