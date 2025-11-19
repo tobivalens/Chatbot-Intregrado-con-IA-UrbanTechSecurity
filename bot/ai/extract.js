@@ -13,7 +13,7 @@ module.exports = {
     const idMatch = text.match(idRegex);
     if (idMatch) info.id = idMatch[0];
 
-    // Nombre (muy simple pero funciona)
+    // Nombre 
     const nameRegex = /(me llamo|soy|mi nombre es)\s+([A-Za-zÁÉÍÓÚÑáéíóúñ ]+)/i;
     const nameMatch = text.match(nameRegex);
     if (nameMatch) info.name = nameMatch[2].trim();

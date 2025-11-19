@@ -1,5 +1,4 @@
 // bot/evidence.js
-// Manejo simple de evidencias: guardamos file_id y tipo en tabla evidences
 const db = require('./db');
 
 function saveEvidences(ticketId, evidences = []) {

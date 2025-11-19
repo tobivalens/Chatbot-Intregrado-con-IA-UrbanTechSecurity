@@ -44,7 +44,6 @@ function registerMetricsCommands(bot) {
             cantidad = commonResults[0].count;
           }
 
-          // Mapeo para que NO se vea "camera_down" sino "Cámara caída"
           const nameMap = {
             svc_outage: "Caída del servicio (NOC)",
             camera_down: "Cámara caída",

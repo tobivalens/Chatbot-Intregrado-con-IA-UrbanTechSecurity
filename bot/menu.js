@@ -11,11 +11,7 @@ const mainMenu = {
       [{ text: '🛠️ 7. Mantenimiento preventivo / correctivo', callback_data: 'maintenance' }],
       [{ text: '🚨 8. Vandalismo / daño físico a equipos', callback_data: 'vandalism' }],
       [{ text: '❓ 9. Otra incidencia', callback_data: 'other_issue' }],
-
-      // 🔵 OPCIÓN NUEVA (DEBE ESTAR EN SU PROPIO ARRAY)
       [{ text: '📁 Mis consultas', callback_data: 'my_queries' }],
-
-      // 🔵 ESTE ERA EL QUE ROMPÍA TODO → YA ESTÁ CORREGIDO
       [{ text: "🚀 IA Avanzada", callback_data: "ia_advanced" }]
     ]
   }
